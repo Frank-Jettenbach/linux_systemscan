@@ -1,0 +1,4 @@
+requests>=2.28
+urllib3>=1.26
+paramiko>=3.0
+mysql-connector-python>=8.0

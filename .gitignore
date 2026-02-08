@@ -1,0 +1,21 @@
+# Python venv
+scanner/venv/
+
+# Config with credentials
+scanner/config.json
+config.php
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Claude
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+scan_output.log

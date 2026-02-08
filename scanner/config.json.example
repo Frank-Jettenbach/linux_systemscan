@@ -1,0 +1,40 @@
+{
+    "proxmox_hosts": [
+        {
+            "ip": "192.168.1.10",
+            "port": 8006,
+            "user": "root@pam",
+            "password": "your_password"
+        }
+    ],
+    "ssh_credentials": {
+        "username": "root",
+        "alt_username": "frank",
+        "password": "your_password",
+        "port": 22,
+        "timeout": 10
+    },
+    "database": {
+        "host": "localhost",
+        "name": "linux_systemscan",
+        "user": "your_db_user",
+        "password": "your_db_password"
+    },
+    "scan_options": {
+        "scan_docker": true,
+        "scan_network": true,
+        "scan_storage": true,
+        "ssh_into_guests": true,
+        "max_old_scans": 50
+    },
+    "skip_docker_scan": [],
+    "guest_labels": {},
+    "homeassistant": [
+        {
+            "ip": "192.168.1.57",
+            "port": 8123,
+            "protocol": "http",
+            "token": "your_long_lived_access_token"
+        }
+    ]
+}

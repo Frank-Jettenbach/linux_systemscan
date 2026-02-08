@@ -1,0 +1,13 @@
+<?php
+return [
+    'db' => [
+        'host' => 'localhost',
+        'name' => 'linux_systemscan',
+        'user' => 'your_db_user',
+        'pass' => 'your_db_password',
+    ],
+    'app' => [
+        'title' => 'Linux SystemScan',
+        'base_url' => '/linux_systemscan',
+    ],
+];
