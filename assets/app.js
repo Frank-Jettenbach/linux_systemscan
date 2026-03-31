@@ -231,6 +231,18 @@
             });
         });
 
+        // Network Hosts (nmap)
+        (data.network_hosts || []).forEach(h => {
+            items.push({
+                type: 'network_host', section: 'network', icon: '&#128257;',
+                title: h.hostname || h.ip_address,
+                searchText: [h.ip_address, h.hostname, h.category, h.description, h.mac_address, h.vendor].join(' '),
+                meta: `${h.ip_address}${h.hostname ? ' · ' + h.hostname : ''} | ${h.category || 'Unbekannt'}${h.description ? ' · ' + h.description : ''}`,
+                status: h.status,
+                data: h
+            });
+        });
+
         // Errors
         (data.errors || []).forEach(e => {
             items.push({
@@ -278,7 +290,8 @@
         const groups = {};
         const typeLabels = {
             host: 'Proxmox Hosts', vm: 'Virtual Machines', lxc: 'LXC Container',
-            docker: 'Docker / Add-ons', storage: 'Storage', network: 'Netzwerk', error: 'Fehler'
+            docker: 'Docker / Add-ons', storage: 'Storage', network: 'Netzwerk',
+            network_host: 'LAN-Hosts', error: 'Fehler'
         };
         for (const r of results) {
             if (!groups[r.type]) groups[r.type] = [];
@@ -298,7 +311,7 @@
             return;
         }
 
-        const typeOrder = ['host', 'vm', 'lxc', 'docker', 'storage', 'network', 'error'];
+        const typeOrder = ['host', 'vm', 'lxc', 'docker', 'storage', 'network', 'network_host', 'error'];
         for (const type of typeOrder) {
             const group = groups[type];
             if (!group || group.length === 0) continue;
@@ -472,9 +485,9 @@
                 <div class="stat-sub">${data.storage.filter(x=>x.shared==1).length} shared</div>
             </div>
             <div class="stat-card clickable" data-goto="network">
-                <div class="stat-label">Netzwerk</div>
-                <div class="stat-value">${networkCount}</div>
-                <div class="stat-sub">${data.network.filter(x=>x.active==1).length} aktiv</div>
+                <div class="stat-label">LAN-Hosts</div>
+                <div class="stat-value accent">${(data.network_hosts || []).length}</div>
+                <div class="stat-sub">${(data.network || []).filter(x=>x.active==1).length} PVE-Interfaces aktiv</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Scan-Dauer</div>
@@ -826,29 +839,236 @@
         contentArea.innerHTML = html;
     }
 
+    let _netSort = { col: 'ip_num', dir: 'asc' };
+    let _netCatFilter = '';
+    let _netSearch = '';
+
+    function ipToNum(ip) {
+        if (!ip) return 0;
+        return ip.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
+    }
+
     function renderNetwork() {
-        const network = filterByHost(data.network);
+        const network = data.network || [];
+        const netHosts = data.network_hosts || [];
+        const topo = data.network_topology || null;
+
+        // Topology summary cards
+        const gatewayIp = topo?.gateway_ip || '';
+        const dns1 = topo?.dns_server1 || '';
+        const dns2 = topo?.dns_server2 || '';
+        const subnet = topo?.subnet || '192.168.178.0/24';
+        const nmapCount = topo?.nmap_hosts_found || netHosts.length;
+
+        // Gateway info from HOST_META (if known)
+        const gatewayMeta = netHosts.find(h => h.ip_address === gatewayIp);
+        const dns1Meta = netHosts.find(h => h.ip_address === dns1);
+
         let html = `<div class="section-header">
             <div>
-                <h2 class="section-title">Netzwerk-Interfaces</h2>
-                <p class="section-subtitle">${network.length} Interfaces gefunden</p>
+                <h2 class="section-title">Netzwerk</h2>
+                <p class="section-subtitle">Topologie &middot; ${nmapCount} Hosts im LAN &middot; ${network.filter(x=>x.active==1).length} PVE-Interfaces</p>
             </div>
         </div>
-        <div class="table-container"><table>
-            <thead><tr><th>Host</th><th>Interface</th><th>Typ</th><th>IP-Adresse</th><th>Aktiv</th><th>Bridge Ports</th></tr></thead>
+
+        <div class="dashboard-grid" style="margin-bottom:24px">
+            <div class="stat-card">
+                <div class="stat-label">Gateway / Router</div>
+                <div class="stat-value accent" style="font-size:18px;font-family:monospace">${gatewayIp ? linkIp(gatewayIp) : '-'}</div>
+                <div class="stat-sub">${esc(gatewayMeta?.description || '')}</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">DNS Server</div>
+                <div class="stat-value accent" style="font-size:18px;font-family:monospace">${dns1 ? esc(dns1) : '-'}</div>
+                <div class="stat-sub">${dns2 ? 'Fallback: ' + esc(dns2) : ''}&nbsp;</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Subnetz</div>
+                <div class="stat-value" style="font-size:18px;font-family:monospace">${esc(subnet)}</div>
+                <div class="stat-sub">${esc(topo?.dns_domain || '')}&nbsp;</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-label">Hosts Online</div>
+                <div class="stat-value success">${nmapCount}</div>
+                <div class="stat-sub">nmap-Scan · ${subnet}</div>
+            </div>
+        </div>`;
+
+        // Category filter
+        const cats = [...new Set(netHosts.map(h => h.category || 'Unbekannt'))].sort();
+        const catCounts = {};
+        netHosts.forEach(h => { const c = h.category || 'Unbekannt'; catCounts[c] = (catCounts[c]||0)+1; });
+
+        html += `<div class="section-header" style="margin-bottom:12px">
+            <h3 class="section-title" style="font-size:16px">LAN-Hosts (${netHosts.length})</h3>
+        </div>
+        <div class="net-filter-bar" id="netFilterBar">
+            <button class="net-cat-btn ${!_netCatFilter ? 'active' : ''}" data-cat="">Alle (${netHosts.length})</button>`;
+        for (const cat of cats) {
+            html += `<button class="net-cat-btn ${_netCatFilter === cat ? 'active' : ''}" data-cat="${esc(cat)}">${esc(cat)} (${catCounts[cat]})</button>`;
+        }
+        html += `</div>
+        <div style="margin-bottom:12px">
+            <input type="text" class="net-search-input" id="netSearchInput" placeholder="IP, Hostname, Beschreibung suchen..." value="${esc(_netSearch)}">
+        </div>`;
+
+        // Build sorted/filtered host list
+        let hosts = [...netHosts];
+        if (_netCatFilter) hosts = hosts.filter(h => (h.category || 'Unbekannt') === _netCatFilter);
+        if (_netSearch) {
+            const q = _netSearch.toLowerCase();
+            hosts = hosts.filter(h =>
+                (h.ip_address||'').includes(q) ||
+                (h.hostname||'').toLowerCase().includes(q) ||
+                (h.description||'').toLowerCase().includes(q) ||
+                (h.category||'').toLowerCase().includes(q) ||
+                (h.mac_address||'').toLowerCase().includes(q) ||
+                (h.vendor||'').toLowerCase().includes(q)
+            );
+        }
+
+        // Sort
+        hosts.sort((a, b) => {
+            let va, vb;
+            if (_netSort.col === 'ip_num') {
+                va = ipToNum(a.ip_address);
+                vb = ipToNum(b.ip_address);
+            } else if (_netSort.col === 'hostname') {
+                va = (a.hostname||'').toLowerCase();
+                vb = (b.hostname||'').toLowerCase();
+            } else if (_netSort.col === 'category') {
+                va = (a.category||'').toLowerCase();
+                vb = (b.category||'').toLowerCase();
+            } else if (_netSort.col === 'description') {
+                va = (a.description||'').toLowerCase();
+                vb = (b.description||'').toLowerCase();
+            } else if (_netSort.col === 'vendor') {
+                va = (a.vendor||'').toLowerCase();
+                vb = (b.vendor||'').toLowerCase();
+            } else {
+                va = vb = 0;
+            }
+            if (va < vb) return _netSort.dir === 'asc' ? -1 : 1;
+            if (va > vb) return _netSort.dir === 'asc' ? 1 : -1;
+            return 0;
+        });
+
+        function sortTh(col, label) {
+            const arrow = _netSort.col === col ? (_netSort.dir === 'asc' ? ' &#9650;' : ' &#9660;') : ' <span style="opacity:0.3">&#9650;</span>';
+            return `<th class="sortable-th" data-col="${col}" style="cursor:pointer;user-select:none">${label}${arrow}</th>`;
+        }
+
+        const catColors = {
+            'Server': 'var(--accent)', 'Infrastruktur': 'var(--purple)',
+            'Energie': 'var(--warning)', 'Smart Home': 'var(--success)',
+            'Kamera': '#f97316', 'Gerät': 'var(--text-secondary)',
+            'Shelly': '#84cc16', 'Drucker': '#ec4899', 'Unbekannt': 'var(--text-muted)'
+        };
+
+        html += `<div class="table-container" style="margin-bottom:28px"><table id="netHostsTable">
+            <thead><tr>
+                ${sortTh('ip_num','IP-Adresse')}
+                ${sortTh('hostname','Hostname')}
+                ${sortTh('category','Kategorie')}
+                ${sortTh('description','Beschreibung')}
+                <th>MAC-Adresse</th>
+                ${sortTh('vendor','Hersteller')}
+            </tr></thead>
             <tbody>`;
-        network.forEach(n => {
+
+        if (hosts.length === 0) {
+            html += `<tr><td colspan="6" class="no-data" style="padding:24px">Keine Hosts gefunden.</td></tr>`;
+        }
+        hosts.forEach(h => {
+            const catColor = catColors[h.category] || 'var(--text-muted)';
             html += `<tr>
-                <td class="mono">${esc(n.host_name || n.host_ip)}</td>
-                <td class="name-col">${esc(n.interface_name)}</td>
-                <td>${esc(n.type)}</td>
-                <td class="mono">${linkIp(n.ip_address)}</td>
-                <td>${n.active == 1 ? '<span class="badge badge-running">Ja</span>' : '<span class="badge badge-stopped">Nein</span>'}</td>
-                <td class="mono" style="font-size:11px">${esc(n.bridge_ports) || '-'}</td>
+                <td class="mono">${linkIp(h.ip_address)}</td>
+                <td class="mono" style="font-size:12px">${esc(h.hostname) || '-'}</td>
+                <td><span style="color:${catColor};font-weight:500;font-size:12px">${esc(h.category||'Unbekannt')}</span></td>
+                <td style="font-size:13px;color:var(--text-secondary)">${esc(h.description) || '-'}</td>
+                <td class="mono" style="font-size:11px;color:var(--text-muted)">${esc(h.mac_address) || '-'}</td>
+                <td style="font-size:12px;color:var(--text-muted)">${esc(h.vendor) || '-'}</td>
             </tr>`;
         });
         html += `</tbody></table></div>`;
+
+        // Proxmox interfaces section
+        if (network.length > 0) {
+            html += `<div class="section-header" style="margin-bottom:12px">
+                <h3 class="section-title" style="font-size:16px">Proxmox Netzwerk-Interfaces</h3>
+            </div>`;
+
+            // Group by host
+            const byHost = {};
+            network.forEach(n => {
+                if (!byHost[n.host_ip]) byHost[n.host_ip] = [];
+                byHost[n.host_ip].push(n);
+            });
+
+            for (const [ip, ifaces] of Object.entries(byHost)) {
+                const hostInfo = (data.hosts||[]).find(h => h.ip_address === ip);
+                const activeCount = ifaces.filter(i => i.active == 1).length;
+                html += `<div style="margin-bottom:8px;display:flex;align-items:center;gap:10px">
+                    <span style="font-size:14px;font-weight:600;color:var(--accent)">${esc(hostInfo?.hostname || ip)}</span>
+                    <span style="font-size:12px;color:var(--text-muted)">${linkIp(ip, 8006)}</span>
+                    ${hostInfo?.gateway ? `<span style="font-size:12px;color:var(--text-secondary)">GW: <code>${esc(hostInfo.gateway)}</code></span>` : ''}
+                    ${hostInfo?.dns_servers ? `<span style="font-size:12px;color:var(--text-secondary)">DNS: <code>${esc(hostInfo.dns_servers)}</code></span>` : ''}
+                </div>
+                <div class="table-container" style="margin-bottom:20px"><table>
+                    <thead><tr><th>Interface</th><th>Typ</th><th>IP / CIDR</th><th>Netmask</th><th>Gateway</th><th>MAC</th><th>MTU</th><th>Aktiv</th><th>Bridge Ports</th></tr></thead>
+                    <tbody>`;
+                ifaces.forEach(n => {
+                    const displayIp = n.cidr || n.ip_address || '-';
+                    html += `<tr>
+                        <td class="name-col">${esc(n.interface_name)}</td>
+                        <td><span class="badge badge-type" style="font-size:10px">${esc(n.type)}</span></td>
+                        <td class="mono" style="font-size:12px">${displayIp !== '-' ? esc(displayIp) : '-'}</td>
+                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${esc(n.netmask) || '-'}</td>
+                        <td class="mono" style="font-size:11px">${n.gateway ? linkIp(n.gateway) : '-'}</td>
+                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${esc(n.mac_address) || '-'}</td>
+                        <td class="mono" style="font-size:11px">${n.mtu || '-'}</td>
+                        <td>${n.active == 1 ? '<span class="badge badge-running">Ja</span>' : '<span class="badge badge-stopped">Nein</span>'}</td>
+                        <td class="mono" style="font-size:11px;color:var(--text-muted)">${esc(n.bridge_ports) || '-'}</td>
+                    </tr>`;
+                });
+                html += `</tbody></table></div>`;
+            }
+        }
+
         contentArea.innerHTML = html;
+
+        // Bind sort headers
+        contentArea.querySelectorAll('.sortable-th').forEach(th => {
+            th.addEventListener('click', () => {
+                const col = th.dataset.col;
+                if (_netSort.col === col) {
+                    _netSort.dir = _netSort.dir === 'asc' ? 'desc' : 'asc';
+                } else {
+                    _netSort.col = col;
+                    _netSort.dir = 'asc';
+                }
+                renderNetwork();
+            });
+        });
+
+        // Bind category filter buttons
+        contentArea.querySelectorAll('.net-cat-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                _netCatFilter = btn.dataset.cat;
+                renderNetwork();
+            });
+        });
+
+        // Bind search input
+        const searchEl = contentArea.querySelector('#netSearchInput');
+        if (searchEl) {
+            searchEl.addEventListener('input', e => {
+                _netSearch = e.target.value;
+                renderNetwork();
+            });
+            // Focus without scrolling
+            searchEl.focus({ preventScroll: true });
+        }
     }
 
     function renderErrors() {

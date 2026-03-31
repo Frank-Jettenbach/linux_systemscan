@@ -37,6 +37,12 @@ try {
             $errors = $pdo->prepare("SELECT * FROM scan_errors WHERE scan_id = ? ORDER BY occurred_at DESC");
             $errors->execute([$sid]);
 
+            $networkHosts = $pdo->prepare("SELECT * FROM network_hosts WHERE scan_id = ? ORDER BY INET_ATON(ip_address)");
+            $networkHosts->execute([$sid]);
+
+            $networkTopology = $pdo->prepare("SELECT * FROM network_topology WHERE scan_id = ? LIMIT 1");
+            $networkTopology->execute([$sid]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -48,6 +54,8 @@ try {
                     'storage' => $storage->fetchAll(),
                     'network' => $network->fetchAll(),
                     'errors' => $errors->fetchAll(),
+                    'network_hosts' => $networkHosts->fetchAll(),
+                    'network_topology' => $networkTopology->fetch() ?: null,
                 ]
             ]);
             break;
@@ -88,6 +96,12 @@ try {
             $errors = $pdo->prepare("SELECT * FROM scan_errors WHERE scan_id = ? ORDER BY occurred_at DESC");
             $errors->execute([$id]);
 
+            $networkHosts = $pdo->prepare("SELECT * FROM network_hosts WHERE scan_id = ? ORDER BY INET_ATON(ip_address)");
+            $networkHosts->execute([$id]);
+
+            $networkTopology = $pdo->prepare("SELECT * FROM network_topology WHERE scan_id = ? LIMIT 1");
+            $networkTopology->execute([$id]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -99,6 +113,8 @@ try {
                     'storage' => $storage->fetchAll(),
                     'network' => $network->fetchAll(),
                     'errors' => $errors->fetchAll(),
+                    'network_hosts' => $networkHosts->fetchAll(),
+                    'network_topology' => $networkTopology->fetch() ?: null,
                 ]
             ]);
             break;

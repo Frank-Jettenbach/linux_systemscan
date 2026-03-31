@@ -16,6 +16,7 @@ import requests
 import paramiko
 import mysql.connector
 from urllib3.exceptions import InsecureRequestWarning
+import collect_local
 
 # Suppress SSL warnings for self-signed Proxmox certs
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
@@ -461,10 +462,17 @@ def scan_proxmox_host(host_cfg, ssh_config, scan_id, errors_list, scan_options):
                         'host_ip': ip,
                         'host_name': node_name,
                         'interface_name': iface.get('iface', ''),
-                        'ip_address': iface.get('address', iface.get('cidr', '')),
+                        'ip_address': iface.get('address', ''),
+                        'netmask': iface.get('netmask', ''),
+                        'gateway': iface.get('gateway', ''),
+                        'cidr': iface.get('cidr', ''),
+                        'mac_address': iface.get('hwaddr', ''),
+                        'mtu': iface.get('mtu') or None,
                         'type': iface.get('type', ''),
                         'active': 1 if iface.get('active', 0) else 0,
+                        'autostart': 1 if iface.get('autostart', 0) else 0,
                         'bridge_ports': iface.get('bridge_ports', ''),
+                        'comments': iface.get('comments', ''),
                     })
         except Exception as e:
             errors_list.append({
@@ -474,6 +482,21 @@ def scan_proxmox_host(host_cfg, ssh_config, scan_id, errors_list, scan_options):
                 'error_message': f"Failed to get network info from {ip}: {str(e)}",
                 'error_detail': traceback.format_exc()
             })
+
+        # Get gateway and DNS per host via SSH
+        import re as _re
+        gw_out = try_ssh_exec(ip, ssh_config,
+            "ip route show default 2>/dev/null | head -1",
+            errors_list, scan_id, "Proxmox-Network")
+        if gw_out:
+            m = _re.search(r'default via (\S+)', gw_out)
+            if m:
+                result['host']['gateway'] = m.group(1)
+        dns_out = try_ssh_exec(ip, ssh_config,
+            "grep '^nameserver' /etc/resolv.conf 2>/dev/null | awk '{print $2}' | paste -sd','",
+            errors_list, scan_id, "Proxmox-Network")
+        if dns_out:
+            result['host']['dns_servers'] = dns_out.strip()
 
     # Scan Docker on Proxmox host itself
     if scan_options.get('scan_docker', True):
@@ -503,6 +526,7 @@ def save_to_database(db, scan_id, all_results, errors_list):
     total_vms = 0
     total_lxcs = 0
     total_docker = 0
+    seen_docker = set()  # (host_ip, name) – verhindert Duplikate durch Doppel-Scan
 
     for result in all_results:
         host = result.get('host')
@@ -511,13 +535,14 @@ def save_to_database(db, scan_id, all_results, errors_list):
                 INSERT INTO proxmox_hosts
                 (scan_id, ip_address, hostname, pve_version, node_name, status,
                  uptime_seconds, cpu_count, cpu_usage, mem_total, mem_used,
-                 disk_total, disk_used, kernel_version)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                 disk_total, disk_used, kernel_version, gateway, dns_servers)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (scan_id, host['ip_address'], host['hostname'], host['pve_version'],
                   host['node_name'], host['status'], host['uptime_seconds'],
                   host['cpu_count'], host['cpu_usage'], host['mem_total'],
                   host['mem_used'], host['disk_total'], host['disk_used'],
-                  host.get('kernel_version', '')))
+                  host.get('kernel_version', ''),
+                  host.get('gateway', ''), host.get('dns_servers', '')))
 
         for vm in result.get('vms', []):
             total_vms += 1
@@ -548,6 +573,10 @@ def save_to_database(db, scan_id, all_results, errors_list):
                   lxc['uptime_seconds'], lxc.get('ip_address')))
 
         for dc in result.get('docker', []):
+            key = (dc['host_ip'], dc['name'])
+            if key in seen_docker:
+                continue
+            seen_docker.add(key)
             total_docker += 1
             cursor.execute("""
                 INSERT INTO docker_containers
@@ -572,10 +601,14 @@ def save_to_database(db, scan_id, all_results, errors_list):
             cursor.execute("""
                 INSERT INTO network_info
                 (scan_id, host_ip, host_name, interface_name, ip_address,
-                 type, active, bridge_ports)
-                VALUES (%s,%s,%s,%s,%s,%s,%s,%s)
+                 netmask, gateway, cidr, mac_address, mtu,
+                 type, active, autostart, bridge_ports, comments)
+                VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
             """, (scan_id, net['host_ip'], net['host_name'], net['interface_name'],
-                  net['ip_address'], net['type'], net['active'], net.get('bridge_ports', '')))
+                  net['ip_address'], net.get('netmask', ''), net.get('gateway', ''),
+                  net.get('cidr', ''), net.get('mac_address', ''), net.get('mtu'),
+                  net['type'], net['active'], net.get('autostart', 0),
+                  net.get('bridge_ports', ''), net.get('comments', '')))
 
     # Save errors
     for err in errors_list:
@@ -707,6 +740,11 @@ def main():
             'error_message': f"Local Docker scan failed: {str(e)}",
             'error_detail': traceback.format_exc()
         })
+
+    # Collect local data (nmap, services, ports, ssh keys, apache)
+    print("\n  Collecting local data ...")
+    local_errors = collect_local.run_all(db, scan_id, config.get('local', {}))
+    errors_list.extend(local_errors)
 
     # Save to database
     print("  Saving results to database...")

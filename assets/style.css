@@ -722,3 +722,43 @@ td.name-col { color: var(--text-primary); font-weight: 500; }
     .nav-center { max-width: 240px; margin: 0 10px; }
     .search-kbd { display: none; }
 }
+
+/* ── Network Filter Bar ── */
+.net-filter-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+}
+.net-cat-btn {
+    padding: 4px 12px;
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 20px;
+    color: var(--text-secondary);
+    font-size: 12px;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+.net-cat-btn:hover { border-color: var(--accent); color: var(--accent); }
+.net-cat-btn.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+
+/* ── Network Search Input ── */
+.net-search-input {
+    width: 100%;
+    max-width: 420px;
+    padding: 7px 14px;
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text-primary);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 0.2s, box-shadow 0.2s;
+}
+.net-search-input::placeholder { color: var(--text-muted); }
+.net-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
+
+/* ── Sortable Table Headers ── */
+.sortable-th:hover { color: var(--accent) !important; }
