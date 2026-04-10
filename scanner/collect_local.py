@@ -22,24 +22,43 @@ HOST_META = {
     '192.168.178.3':   ('Infrastruktur', 'TP-Link Omada Controller OC200'),
     '192.168.178.4':   ('Infrastruktur', 'TP-Link Switch SG2008P'),
     '192.168.178.10':  ('Server',        'Proxmox Host – Geekom Mini-PC'),
+    '192.168.178.11':  ('Server',        'Ollama AI Server'),
     '192.168.178.23':  ('Server',        'Paperless-NGX QA'),
     '192.168.178.29':  ('Smart Home',    'Homematic CCU'),
     '192.168.178.32':  ('Server',        'Paperless-NGX Produktiv'),
     '192.168.178.42':  ('Server',        'Proxmox Host'),
     '192.168.178.44':  ('Energie',       'ESP32 Gaszähler'),
+    '192.168.178.28':  ('Server',        'Frigate NVR – Kamera-Aufzeichnung'),
+    '192.168.178.53':  ('Drucker',       'Bürodrucker'),
+    '192.168.178.56':  ('Kamera',        'IP-Kamera'),
     '192.168.178.57':  ('Server',        'Home Assistant'),
     '192.168.178.67':  ('Energie',       'go-eCharger Wallbox'),
+    '192.168.178.76':  ('Gerät',         'Samsung Galaxy A55 – Claudia'),
     '192.168.178.83':  ('Server',        'Paperless-NGX Test'),
     '192.168.178.89':  ('Server',        'linkmanager – DIESER HOST'),
+    '192.168.178.90':  ('Server',        'Ollama AI Server'),
     '192.168.178.104': ('Server',        'GLM5 AI Dev Server'),
+    '192.168.178.106': ('Infrastruktur', 'AdGuard Home DNS-Server'),
+    '192.168.178.107': ('Drucker',       'Canon C500'),
     '192.168.178.109': ('Server',        'Proxmox Host 2'),
-    '192.168.178.143': ('Energie',       'Varta Batteriespeicher'),
-    '192.168.178.150': ('Energie',       'EW11 RS485/Ethernet Adapter'),
-    '192.168.178.167': ('Server',        'NAS'),
-    '192.168.178.196': ('Energie',       'SMA Solar-Wechselrichter'),
-    '192.168.178.200': ('Infrastruktur', 'FritzBox Repeater'),
+    '192.168.178.114': ('Kamera',        'IMOU Kamera – Hühnerstall'),
+    '192.168.178.117': ('Drucker',       'Drucker'),
+    '192.168.178.120': ('Drucker',       'Canon C310'),
+    '192.168.178.129': ('Kamera',        'Tapo Kamera'),
     '192.168.178.132': ('Infrastruktur', 'TP-Link EAP225 Access Point Outdoor'),
     '192.168.178.135': ('Infrastruktur', 'TP-Link TL-WR902AC Router'),
+    '192.168.178.142': ('Kamera',        'Tapo Kamera'),
+    '192.168.178.143': ('Energie',       'Varta Batteriespeicher'),
+    '192.168.178.150': ('Energie',       'EW11 RS485/Ethernet Adapter'),
+    '192.168.178.153': ('Energie',       'Stromzähler'),
+    '192.168.178.155': ('Shelly',        'Shelly Switch – Wintergarten Teich'),
+    '192.168.178.158': ('Smart Home',    'Awtrix LED-Matrix'),
+    '192.168.178.161': ('Shelly',        'Shelly Plus 1 – Panikleuchte'),
+    '192.168.178.166': ('Shelly',        'Shelly Steckdosenleiste – Wintergarten'),
+    '192.168.178.167': ('Server',        'NAS'),
+    '192.168.178.176': ('Kamera',        'Reolink Kamera'),
+    '192.168.178.196': ('Energie',       'SMA Solar-Wechselrichter'),
+    '192.168.178.200': ('Infrastruktur', 'FritzBox Repeater'),
 }
 
 SSH_KEY_PURPOSE = {
@@ -72,12 +91,44 @@ def _run(cmd, timeout=60):
 
 
 # ── nmap ────────────────────────────────────────────────────────────────────
+def _shelly_desc(hostname):
+    """Extrahiert lesbaren Namen aus Shelly-Hostnamen."""
+    name = hostname.split('.')[0]
+    name_l = name.lower()
+    models = [
+        ('shellyplusplugs', 'Shelly Plus Plug S'),
+        ('shellyplus2pm',   'Shelly Plus 2PM'),
+        ('shellyplus1pm',   'Shelly Plus 1PM'),
+        ('shellyplus1',     'Shelly Plus 1'),
+        ('shellydimmer2',   'Shelly Dimmer 2'),
+        ('shellyplug-s',    'Shelly Plug S'),
+        ('shellyplug',      'Shelly Plug'),
+        ('shellyswitch',    'Shelly Switch'),
+        ('shelly1pm',       'Shelly 1PM'),
+        ('shelly1',         'Shelly 1'),
+        ('shelly2',         'Shelly 2'),
+    ]
+    model_label = 'Shelly'
+    rest = name_l
+    for prefix, label in models:
+        if name_l.startswith(prefix):
+            model_label = label
+            rest = name_l[len(prefix):].lstrip('-')
+            break
+    parts = rest.split('-') if rest else []
+    # MAC-ähnliche Teile herausfiltern (6+ Hex-Zeichen)
+    location = [p for p in parts if not re.match(r'^[0-9a-f]{6,}$', p)]
+    if location:
+        return f"{model_label} – {' '.join(p.capitalize() for p in location)}"
+    return model_label
+
+
 def scan_nmap(subnet, scan_id, errors):
     print(f"  [nmap] Scanning {subnet} ...")
     hosts = []
     try:
         result = subprocess.run(
-            ['nmap', '-sn', '-oX', '-', subnet],
+            ['nmap', '-sn', '--dns-servers', '192.168.178.106', '-oX', '-', subnet],
             capture_output=True, text=True, timeout=120
         )
         root = ET.fromstring(result.stdout)
@@ -101,28 +152,33 @@ def scan_nmap(subnet, scan_id, errors):
             cat, desc = HOST_META.get(ip, (None, None))
             if cat is None:
                 hn_l = hostname.lower()
-                if any(hn_l.startswith(p) for p in ('shelly',)):
-                    cat, desc = 'Shelly', f'Shelly Gerät – {hostname}'
-                elif any(x in hn_l for x in ('drucker', 'c500', 'c310', 'c200', 'rtk')):
-                    cat, desc = 'Drucker', hostname
-                elif any(x in hn_l for x in ('ipcam', 'imou', 'reolink', 'nomi', 'wintergarten-teich')):
-                    cat, desc = 'Kamera', hostname
-                elif any(x in hn_l for x in ('tablet', 'android', 'pixel', 'redmi', 'samsung', 'tab-s')):
-                    cat, desc = 'Gerät', f'Mobilgerät – {hostname}'
-                elif 'roborock' in hn_l:
+                base = hn_l.split('.')[0]  # ohne .fritz.box
+                if base.startswith('shelly'):
+                    cat, desc = 'Shelly', _shelly_desc(hostname)
+                elif 'frigate' in base:
+                    cat, desc = 'Server', 'Frigate NVR – Kamera-Aufzeichnung'
+                elif 'ollama' in base:
+                    cat, desc = 'Server', f'Ollama AI Server – {base}'
+                elif any(x in base for x in ('tapo',)):
+                    cat, desc = 'Kamera', f'Tapo Kamera – {base}'
+                elif any(x in base for x in ('drucker', 'c500', 'c310', 'c200', 'rtk')):
+                    cat, desc = 'Drucker', hostname.split('.')[0]
+                elif any(x in base for x in ('ipcam', 'imou', 'reolink', 'nomi')):
+                    cat, desc = 'Kamera', hostname.split('.')[0]
+                elif any(x in base for x in ('tablet', 'android', 'pixel', 'redmi', 'samsung', 'tab-s', 'a55')):
+                    cat, desc = 'Gerät', f'Mobilgerät – {hostname.split(".")[0]}'
+                elif 'roborock' in base:
                     cat, desc = 'Gerät', 'Roborock Saugroboter'
-                elif 'amazon' in hn_l:
+                elif 'amazon' in base:
                     cat, desc = 'Gerät', 'Amazon Echo/Fire'
-                elif 'awtrix' in hn_l:
+                elif 'awtrix' in base:
                     cat, desc = 'Smart Home', 'Awtrix LED-Matrix'
-                elif any(x in hn_l for x in ('fritz',)):
-                    cat, desc = 'Infrastruktur', hostname
-                elif any(x in hn_l for x in ('eap', 'tl-', 'sg200', 'oc200')):
-                    cat, desc = 'Infrastruktur', f'TP-Link – {hostname}'
-                elif any(x in hn_l for x in ('varta', 'sma', 'go-echarger', 'gasuhr', 'ew11')):
-                    cat, desc = 'Energie', hostname
+                elif any(x in base for x in ('eap', 'tl-', 'sg200', 'oc200', 'adguard')):
+                    cat, desc = 'Infrastruktur', hostname.split('.')[0]
+                elif any(x in base for x in ('varta', 'sma', 'go-echarger', 'gasuhr', 'ew11', 'stromzaehler')):
+                    cat, desc = 'Energie', hostname.split('.')[0]
                 else:
-                    cat, desc = 'Unbekannt', hostname
+                    cat, desc = 'Unbekannt', hostname.split('.')[0]
 
             hosts.append({
                 'scan_id': scan_id, 'ip_address': ip, 'hostname': hostname,
