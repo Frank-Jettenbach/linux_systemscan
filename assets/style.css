@@ -760,5 +760,15 @@ td.name-col { color: var(--text-primary); font-weight: 500; }
 .net-search-input::placeholder { color: var(--text-muted); }
 .net-search-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-dim); }
 
+/* ── Web-Open Button ── */
+.web-open-btn {
+    display: inline-block;
+    font-size: 15px;
+    text-decoration: none;
+    opacity: 0.7;
+    transition: opacity 0.15s, transform 0.15s;
+}
+.web-open-btn:hover { opacity: 1; transform: scale(1.2); }
+
 /* ── Sortable Table Headers ── */
 .sortable-th:hover { color: var(--accent) !important; }

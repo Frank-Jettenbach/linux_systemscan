@@ -971,21 +971,26 @@
                 ${sortTh('hostname','Hostname')}
                 ${sortTh('category','Kategorie')}
                 ${sortTh('description','Beschreibung')}
+                <th>Web</th>
                 <th>MAC-Adresse</th>
                 ${sortTh('vendor','Hersteller')}
             </tr></thead>
             <tbody>`;
 
         if (hosts.length === 0) {
-            html += `<tr><td colspan="6" class="no-data" style="padding:24px">Keine Hosts gefunden.</td></tr>`;
+            html += `<tr><td colspan="7" class="no-data" style="padding:24px">Keine Hosts gefunden.</td></tr>`;
         }
         hosts.forEach(h => {
             const catColor = catColors[h.category] || 'var(--text-muted)';
+            const webBtn = h.web_url
+                ? `<a href="${esc(h.web_url)}" target="_blank" rel="noopener" class="web-open-btn" title="${esc(h.web_url)}">&#x1F517;</a>`
+                : '<span style="color:var(--text-muted);font-size:11px">–</span>';
             html += `<tr>
                 <td class="mono">${linkIp(h.ip_address)}</td>
                 <td class="mono" style="font-size:12px">${esc(h.hostname) || '-'}</td>
                 <td><span style="color:${catColor};font-weight:500;font-size:12px">${esc(h.category||'Unbekannt')}</span></td>
                 <td style="font-size:13px;color:var(--text-secondary)">${esc(h.description) || '-'}</td>
+                <td style="text-align:center">${webBtn}</td>
                 <td class="mono" style="font-size:11px;color:var(--text-muted)">${esc(h.mac_address) || '-'}</td>
                 <td style="font-size:12px;color:var(--text-muted)">${esc(h.vendor) || '-'}</td>
             </tr>`;

@@ -2,6 +2,7 @@
 """
 collect_local.py – Sammelt lokale Daten von linkmanager:
   - nmap Netzwerk-Scan (alle Hosts im LAN)
+  - nmap Web-Port-Scan (leitet web_url ab, speichert in DB)
   - Systemd Services (systemctl)
   - Offene Ports (ss -tlnp)
   - SSH Keys + Deployment-Status
@@ -23,12 +24,13 @@ HOST_META = {
     '192.168.178.4':   ('Infrastruktur', 'TP-Link Switch SG2008P'),
     '192.168.178.10':  ('Server',        'Proxmox Host – Geekom Mini-PC'),
     '192.168.178.11':  ('Server',        'Ollama AI Server'),
+    '192.168.178.12':  ('Server',        'Open WebUI – Ollama Chat-Interface'),
     '192.168.178.23':  ('Server',        'Paperless-NGX QA'),
+    '192.168.178.28':  ('Server',        'Frigate NVR – Kamera-Aufzeichnung'),
     '192.168.178.29':  ('Smart Home',    'Homematic CCU'),
     '192.168.178.32':  ('Server',        'Paperless-NGX Produktiv'),
     '192.168.178.42':  ('Server',        'Proxmox Host'),
     '192.168.178.44':  ('Energie',       'ESP32 Gaszähler'),
-    '192.168.178.28':  ('Server',        'Frigate NVR – Kamera-Aufzeichnung'),
     '192.168.178.53':  ('Drucker',       'Bürodrucker'),
     '192.168.178.56':  ('Kamera',        'IP-Kamera'),
     '192.168.178.57':  ('Server',        'Home Assistant'),
@@ -53,6 +55,7 @@ HOST_META = {
     '192.168.178.153': ('Energie',       'Stromzähler'),
     '192.168.178.155': ('Shelly',        'Shelly Switch – Wintergarten Teich'),
     '192.168.178.158': ('Smart Home',    'Awtrix LED-Matrix'),
+    '192.168.178.159': ('Kamera',        'NOMI IP-Kamera'),
     '192.168.178.161': ('Shelly',        'Shelly Plus 1 – Panikleuchte'),
     '192.168.178.166': ('Shelly',        'Shelly Steckdosenleiste – Wintergarten'),
     '192.168.178.167': ('Server',        'NAS'),
@@ -84,13 +87,72 @@ SSH_KEY_TARGETS = {
     'id_ed25519_claude': [],
 }
 
+# Priorisierte Web-Port-Liste: (port, schema)
+# Erster offener Port gewinnt → web_url
+WEB_PORTS = [
+    (8006,  'https'),  # Proxmox
+    (8123,  'http'),   # Home Assistant
+    (5000,  'http'),   # Frigate / Synology DSM
+    (3000,  'http'),   # Grafana / Node.js
+    (1880,  'http'),   # Node-RED
+    (9000,  'http'),   # diverse
+    (8080,  'http'),   # Open WebUI / diverse
+    (8443,  'https'),  # HTTPS-Alt
+    (443,   'https'),  # Standard HTTPS
+    (80,    'http'),   # Standard HTTP
+]
+
 
 def _run(cmd, timeout=60):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return r.stdout.strip()
 
 
-# ── nmap ────────────────────────────────────────────────────────────────────
+# ── nmap Web-Port-Scan ───────────────────────────────────────────────────────
+def scan_web_ports(ip_list, errors):
+    """Scannt alle gefundenen Hosts auf Web-Ports, gibt {ip: web_url} zurück."""
+    if not ip_list:
+        return {}
+    print(f"  [webports] Scanning {len(ip_list)} Hosts auf Web-Ports ...")
+    port_str = ','.join(str(p) for p, _ in WEB_PORTS)
+    web_map = {}
+    try:
+        result = subprocess.run(
+            ['nmap', '-p', port_str, '--open', '-oX', '-'] + ip_list,
+            capture_output=True, text=True, timeout=180
+        )
+        root = ET.fromstring(result.stdout)
+        for h in root.findall('host'):
+            ip = ''
+            for addr in h.findall('address'):
+                if addr.get('addrtype') == 'ipv4':
+                    ip = addr.get('addr', '')
+                    break
+            if not ip:
+                continue
+            open_ports = set()
+            ports_el = h.find('ports')
+            if ports_el is not None:
+                for p in ports_el.findall('port'):
+                    state = p.find('state')
+                    if state is not None and state.get('state') == 'open':
+                        open_ports.add(int(p.get('portid', 0)))
+            # Erste Priorität gewinnt
+            for port, schema in WEB_PORTS:
+                if port in open_ports:
+                    if port in (80, 443):
+                        web_map[ip] = f"{schema}://{ip}"
+                    else:
+                        web_map[ip] = f"{schema}://{ip}:{port}"
+                    break
+    except Exception as e:
+        errors.append({'scan_id': None, 'host_ip': 'webports', 'component': 'web_ports',
+                       'error_message': str(e), 'error_detail': traceback.format_exc()})
+    print(f"    → {len(web_map)} Hosts mit Web-Interface")
+    return web_map
+
+
+# ── nmap Ping-Scan ───────────────────────────────────────────────────────────
 def _shelly_desc(hostname):
     """Extrahiert lesbaren Namen aus Shelly-Hostnamen."""
     name = hostname.split('.')[0]
@@ -184,11 +246,19 @@ def scan_nmap(subnet, scan_id, errors):
                 'scan_id': scan_id, 'ip_address': ip, 'hostname': hostname,
                 'status': 'up', 'category': cat, 'description': desc or '',
                 'mac_address': mac, 'vendor': vendor,
+                'web_url': '',  # wird nach Web-Port-Scan befüllt
             })
     except Exception as e:
         errors.append({'scan_id': scan_id, 'host_ip': subnet, 'component': 'nmap',
                        'error_message': str(e), 'error_detail': traceback.format_exc()})
     print(f"    → {len(hosts)} Hosts gefunden")
+
+    # Web-Port-Scan für alle gefundenen IPs
+    ip_list = [h['ip_address'] for h in hosts]
+    web_map = scan_web_ports(ip_list, errors)
+    for h in hosts:
+        h['web_url'] = web_map.get(h['ip_address'], '')
+
     return hosts
 
 
@@ -370,9 +440,9 @@ def save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, 
     if nmap_hosts:
         cursor.executemany("""
             INSERT INTO network_hosts
-            (scan_id, ip_address, hostname, status, category, description, mac_address, vendor)
+            (scan_id, ip_address, hostname, status, category, description, mac_address, vendor, web_url)
             VALUES (%(scan_id)s,%(ip_address)s,%(hostname)s,%(status)s,
-                    %(category)s,%(description)s,%(mac_address)s,%(vendor)s)
+                    %(category)s,%(description)s,%(mac_address)s,%(vendor)s,%(web_url)s)
         """, nmap_hosts)
 
     if services:
