@@ -46,6 +46,9 @@ try {
             $serviceScan = $pdo->prepare("SELECT * FROM service_scan WHERE scan_id = ? ORDER BY INET_ATON(ip_address), port");
             $serviceScan->execute([$sid]);
 
+            $apacheVhosts = $pdo->prepare("SELECT * FROM apache_vhosts WHERE scan_id = ? ORDER BY config_file, route");
+            $apacheVhosts->execute([$sid]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -60,6 +63,7 @@ try {
                     'network_hosts' => $networkHosts->fetchAll(),
                     'network_topology' => $networkTopology->fetch() ?: null,
                     'service_scan' => $serviceScan->fetchAll(),
+                    'apache_vhosts' => $apacheVhosts->fetchAll(),
                 ]
             ]);
             break;
@@ -109,6 +113,9 @@ try {
             $serviceScan2 = $pdo->prepare("SELECT * FROM service_scan WHERE scan_id = ? ORDER BY INET_ATON(ip_address), port");
             $serviceScan2->execute([$id]);
 
+            $apacheVhosts2 = $pdo->prepare("SELECT * FROM apache_vhosts WHERE scan_id = ? ORDER BY config_file, route");
+            $apacheVhosts2->execute([$id]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -123,6 +130,7 @@ try {
                     'network_hosts' => $networkHosts->fetchAll(),
                     'network_topology' => $networkTopology->fetch() ?: null,
                     'service_scan' => $serviceScan2->fetchAll(),
+                    'apache_vhosts' => $apacheVhosts2->fetchAll(),
                 ]
             ]);
             break;

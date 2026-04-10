@@ -863,6 +863,10 @@
     let _netCatFilter = '';
     let _netSearch = '';
 
+    let _svcTypeFilter = 'all';
+    let _svcSearch = '';
+    let _svcSort = { col: 'ip_num', dir: 'asc' };
+
     function ipToNum(ip) {
         if (!ip) return 0;
         return ip.split('.').reduce((acc, oct) => (acc << 8) + parseInt(oct, 10), 0) >>> 0;
@@ -1267,110 +1271,264 @@
 
     /* ── Services Render ── */
     function renderServices() {
-        const services = data.service_scan || [];
+        const services  = data.service_scan  || [];
+        const vhosts    = data.apache_vhosts || [];
+        const localHost = window.location.hostname;
 
-        // Alle vorhandenen Service-Typen ermitteln
-        const types = [...new Set(services.map(s => s.service_type))].sort();
-        let activeFilter = 'all';
+        const WEB_TYPES = ['http','https'];
+        const DB_TYPES  = ['mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'];
 
-        function getTypeClass(t) {
-            const known = ['http','https','mysql','postgres','mongodb','couchdb','influxdb','redis','elasticsearch','mqtt','ftp','smb','vnc'];
-            return known.includes(t) ? 'stype-' + t : 'stype-default';
+        // ── Helpers ──────────────────────────────────────────────────────────
+        function svcUrl(s) {
+            const port = s.port;
+            const scheme = s.service_type === 'https' ? 'https' : 'http';
+            if ((scheme === 'http' && port === 80) || (scheme === 'https' && port === 443))
+                return `${scheme}://${s.ip_address}`;
+            return `${scheme}://${s.ip_address}:${port}`;
         }
 
-        function httpStatusClass(code) {
-            if (!code) return '';
-            if (code >= 200 && code < 300) return 'http-status-ok';
-            if (code >= 300 && code < 400) return 'http-status-rdr';
-            return 'http-status-err';
+        function typeClass(t) {
+            return ['http','https','mysql','postgres','mongodb','couchdb','influxdb',
+                    'redis','elasticsearch','mqtt','ftp','smb','vnc'].includes(t)
+                ? 'stype-' + t : 'stype-default';
         }
 
-        function sslIcon(valid) {
-            if (valid === null || valid === undefined || valid === '') return '<span class="ssl-unknown" title="N/A">&#8211;</span>';
-            if (Number(valid) === 1) return '<span class="ssl-ok" title="Zertifikat gueltig">&#10003;</span>';
-            return '<span class="ssl-bad" title="Zertifikat ungueltig / abgelaufen">&#10007;</span>';
+        function httpBadge(code) {
+            if (!code) return '<span class="text-muted">-</span>';
+            const cls = code < 300 ? 'http-status-ok' : code < 400 ? 'http-status-rdr' : 'http-status-err';
+            return `<span class="${cls}">${code}</span>`;
         }
 
-        function buildTable(list) {
-            if (!list.length) return '<div class="no-data">Keine Services gefunden.</div>';
-            return `<table class="data-table">
+        function sslBadge(valid, expires) {
+            if (valid === null || valid === undefined || String(valid) === '') return '';
+            const icon  = Number(valid) === 1
+                ? '<span class="ssl-ok">&#10003;</span>'
+                : '<span class="ssl-bad">&#10007;</span>';
+            const exp = expires ? `<span class="text-muted" style="font-size:11px;margin-left:4px">${esc(String(expires).substring(0,11))}</span>` : '';
+            return icon + exp;
+        }
+
+        // ── Sortierung & Filter ───────────────────────────────────────────────
+        function sortTh(col, label, hint) {
+            const active = _svcSort.col === col;
+            const arrow  = active ? (_svcSort.dir === 'asc' ? ' ▲' : ' ▼') : '';
+            const title  = hint ? ` title="${hint}"` : '';
+            return `<th class="sortable-th" data-scol="${col}" style="cursor:pointer;user-select:none;white-space:nowrap"${title}>${label}${arrow}</th>`;
+        }
+
+        function appliedServices() {
+            let list = [...services];
+            if (_svcTypeFilter === '_web')   list = list.filter(s => WEB_TYPES.includes(s.service_type));
+            else if (_svcTypeFilter === '_db') list = list.filter(s => DB_TYPES.includes(s.service_type));
+            else if (_svcTypeFilter === '_other') list = list.filter(s => !WEB_TYPES.includes(s.service_type) && !DB_TYPES.includes(s.service_type));
+            else if (_svcTypeFilter !== 'all') list = list.filter(s => s.service_type === _svcTypeFilter);
+
+            if (_svcSearch) {
+                const q = _svcSearch.toLowerCase();
+                list = list.filter(s =>
+                    (s.ip_address||'').includes(q) ||
+                    (s.hostname||'').toLowerCase().includes(q) ||
+                    (s.service_type||'').includes(q) ||
+                    (s.http_title||'').toLowerCase().includes(q) ||
+                    (s.http_server||'').toLowerCase().includes(q) ||
+                    (s.banner||'').toLowerCase().includes(q) ||
+                    String(s.port).includes(q)
+                );
+            }
+
+            list.sort((a, b) => {
+                let va, vb;
+                if (_svcSort.col === 'ip_num')     { va = ipToNum(a.ip_address); vb = ipToNum(b.ip_address); }
+                else if (_svcSort.col === 'port')   { va = +a.port; vb = +b.port; }
+                else if (_svcSort.col === 'type')   { va = a.service_type||''; vb = b.service_type||''; }
+                else if (_svcSort.col === 'status') { va = a.http_status||0; vb = b.http_status||0; }
+                else if (_svcSort.col === 'time')   { va = a.response_time_ms||9999; vb = b.response_time_ms||9999; }
+                else if (_svcSort.col === 'title')  { va = (a.http_title||a.banner||'').toLowerCase(); vb = (b.http_title||b.banner||'').toLowerCase(); }
+                else { va = vb = 0; }
+                if (va < vb) return _svcSort.dir === 'asc' ? -1 : 1;
+                if (va > vb) return _svcSort.dir === 'asc' ? 1 : -1;
+                return ipToNum(a.ip_address) - ipToNum(b.ip_address);
+            });
+            return list;
+        }
+
+        // ── Web-Services: nach Host gruppiert ────────────────────────────────
+        function renderWebSection(list) {
+            if (!list.length) return '<div class="no-data" style="margin-bottom:24px">Keine Web-Services gefunden.</div>';
+            const byIp = {};
+            list.forEach(s => {
+                const k = s.ip_address;
+                if (!byIp[k]) byIp[k] = { hostname: s.hostname, items: [] };
+                byIp[k].items.push(s);
+            });
+            let html = '';
+            for (const [ip, grp] of Object.entries(byIp)) {
+                const label = grp.hostname ? `${esc(grp.hostname)} <span class="text-muted">(${esc(ip)})</span>` : `<code>${esc(ip)}</code>`;
+                html += `<h3 class="svc-host-heading">&#127760; ${label}</h3>
+                <div class="table-container" style="margin-bottom:20px"><table>
                 <thead><tr>
-                    <th>IP</th>
-                    <th>Hostname</th>
-                    <th>Port</th>
-                    <th>Typ</th>
-                    <th>HTTP</th>
-                    <th>Titel / Banner</th>
+                    <th style="width:90px">Port&nbsp;/&nbsp;Typ</th>
+                    <th>URL</th>
+                    <th>Titel</th>
+                    <th>Status</th>
                     <th>Server</th>
                     <th>SSL</th>
-                    <th>Antwort</th>
-                </tr></thead>
-                <tbody>
-                ${list.map(s => `<tr>
-                    <td>${s.web_url ? `<a href="${esc(s.web_url || 'http://' + s.ip_address + ':' + s.port)}" target="_blank" class="ip-link">${esc(s.ip_address)}</a>` : esc(s.ip_address)}</td>
-                    <td>${esc(s.hostname) || '<span class="text-muted">-</span>'}</td>
-                    <td><code>${esc(s.port)}</code></td>
-                    <td><span class="service-type-badge ${getTypeClass(s.service_type)}">${esc(s.service_type)}</span></td>
-                    <td class="${httpStatusClass(s.http_status)}">${s.http_status || '<span class="text-muted">-</span>'}</td>
-                    <td class="text-truncate" style="max-width:260px" title="${esc(s.http_title || s.banner)}">${esc((s.http_title || s.banner || '').substring(0, 80)) || '<span class="text-muted">-</span>'}</td>
-                    <td class="text-muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.http_server) || '-'}</td>
-                    <td>${sslIcon(s.ssl_valid)}${s.ssl_expires ? `<span class="text-muted" style="font-size:11px;margin-left:4px">${esc(s.ssl_expires.substring(0,11))}</span>` : ''}</td>
-                    <td class="text-muted">${s.response_time_ms != null ? s.response_time_ms + ' ms' : '-'}</td>
-                </tr>`).join('')}
-                </tbody>
-            </table>`;
+                    <th style="width:80px">Antwort</th>
+                </tr></thead><tbody>`;
+                grp.items.forEach(s => {
+                    const url  = svcUrl(s);
+                    const titleOrDash = s.http_title
+                        ? `<a href="${esc(url)}" target="_blank" class="svc-title-link" title="${esc(s.http_title)}">${esc(s.http_title.substring(0,60))}${s.http_title.length>60?'…':''}</a>`
+                        : `<span class="text-muted">-</span>`;
+                    html += `<tr>
+                        <td><span class="service-type-badge ${typeClass(s.service_type)}">${esc(s.service_type)}</span><br><code class="text-muted" style="font-size:10px">:${s.port}</code></td>
+                        <td><a href="${esc(url)}" target="_blank" class="ip-link">${esc(url)}</a></td>
+                        <td style="max-width:240px">${titleOrDash}</td>
+                        <td>${httpBadge(s.http_status)}</td>
+                        <td class="text-muted" style="font-size:12px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(s.http_server)}">${esc(s.http_server)||'-'}</td>
+                        <td style="white-space:nowrap">${sslBadge(s.ssl_valid, s.ssl_expires)}</td>
+                        <td class="text-muted" style="text-align:right">${s.response_time_ms != null ? s.response_time_ms+'&thinsp;ms' : '-'}</td>
+                    </tr>`;
+                });
+                html += '</tbody></table></div>';
+            }
+            return html;
         }
 
-        function renderFiltered() {
-            const list = activeFilter === 'all' ? services
-                : services.filter(s => s.service_type === activeFilter);
-            document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
+        // ── Apache VHosts: lokaler Webserver ─────────────────────────────────
+        function renderApacheSection() {
+            if (!vhosts.length) return '';
+            let html = `<h3 class="svc-section-heading">&#128196; Apache VHosts <span class="text-muted" style="font-weight:400;font-size:13px">&mdash; ${localHost}</span></h3>
+            <div class="table-container" style="margin-bottom:24px"><table>
+            <thead><tr><th>Route</th><th>Ziel</th><th>Config</th><th>Server Name</th></tr></thead><tbody>`;
+            vhosts.forEach(v => {
+                const routeUrl = `http://${localHost}${v.route}`;
+                // Externer Proxy-Link wenn Target http(s):// ist
+                const targetLink = (v.target||'').startsWith('http')
+                    ? `<a href="${esc(v.target)}" target="_blank" class="ip-link">${esc(v.target)}</a>`
+                    : `<code class="text-muted">${esc(v.target)}</code>`;
+                html += `<tr>
+                    <td><a href="${esc(routeUrl)}" target="_blank" class="ip-link">${esc(v.route)}</a></td>
+                    <td>${targetLink}</td>
+                    <td class="text-muted" style="font-size:12px">${esc(v.config_file)}</td>
+                    <td class="text-muted" style="font-size:12px">${esc(v.server_name)}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            return html;
         }
 
-        const webCount = services.filter(s => s.service_type === 'http' || s.service_type === 'https').length;
-        const dbCount  = services.filter(s => ['mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type)).length;
-        const otherCount = services.length - webCount - dbCount;
+        // ── Datenbanken & Dienste: sortierbare Tabelle ───────────────────────
+        function renderDbSection(list) {
+            if (!list.length) return '<div class="no-data" style="margin-bottom:24px">Keine Datenbanken / Dienste gefunden.</div>';
+            let html = `<div class="table-container" style="margin-bottom:24px"><table>
+            <thead><tr>
+                ${sortTh('ip_num','IP-Adresse')}
+                <th>Hostname</th>
+                ${sortTh('port','Port')}
+                ${sortTh('type','Typ')}
+                <th>Version&nbsp;/&nbsp;Banner</th>
+            </tr></thead><tbody>`;
+            list.forEach(s => {
+                const cleanBanner = (s.banner||'').replace(/[\r\n]+/g,' ').trim();
+                html += `<tr>
+                    <td><code>${esc(s.ip_address)}</code></td>
+                    <td class="text-muted">${esc(s.hostname)||'-'}</td>
+                    <td><code>:${s.port}</code></td>
+                    <td><span class="service-type-badge ${typeClass(s.service_type)}">${esc(s.service_type)}</span></td>
+                    <td class="text-muted" style="font-size:12px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(cleanBanner)}">${esc(cleanBanner)||'<span class="text-muted">-</span>'}</td>
+                </tr>`;
+            });
+            html += '</tbody></table></div>';
+            return html;
+        }
 
-        let filterHtml = `<button class="service-filter-btn active" data-type="all">Alle (${services.length})</button>`;
-        if (webCount)  filterHtml += `<button class="service-filter-btn" data-type="_web">Web (${webCount})</button>`;
-        if (dbCount)   filterHtml += `<button class="service-filter-btn" data-type="_db">Datenbanken (${dbCount})</button>`;
-        if (otherCount) filterHtml += `<button class="service-filter-btn" data-type="_other">Sonstiges (${otherCount})</button>`;
+        // ── Haupt-Render ─────────────────────────────────────────────────────
+        function redraw() {
+            const filtered  = appliedServices();
+            const webList   = filtered.filter(s => WEB_TYPES.includes(s.service_type));
+            const dbList    = filtered.filter(s => !WEB_TYPES.includes(s.service_type));
+            const showVhost = !_svcTypeFilter.startsWith('_db') && _svcTypeFilter !== '_other' &&
+                              !DB_TYPES.concat(['mqtt','ftp','smb','vnc']).includes(_svcTypeFilter);
+
+            const wrap = document.getElementById('svcWrap');
+            if (!wrap) return;
+
+            let html = '';
+            if (!filtered.length && !showVhost) {
+                html = '<div class="no-data">Keine Services für diesen Filter gefunden.</div>';
+            } else {
+                if (webList.length || (_svcTypeFilter === 'all' || _svcTypeFilter === '_web')) {
+                    html += `<h3 class="svc-section-heading">&#127760; Webserver (${webList.length})</h3>`;
+                    html += renderWebSection(webList);
+                }
+                if (showVhost && vhosts.length) {
+                    html += renderApacheSection();
+                }
+                if (dbList.length || _svcTypeFilter === '_db') {
+                    html += `<h3 class="svc-section-heading">&#128190; Datenbanken&nbsp;&amp;&nbsp;Dienste (${dbList.length})</h3>`;
+                    html += renderDbSection(dbList);
+                }
+            }
+            wrap.innerHTML = html;
+
+            // Sort-Header binden
+            wrap.querySelectorAll('.sortable-th[data-scol]').forEach(th => {
+                th.addEventListener('click', () => {
+                    const col = th.dataset.scol;
+                    if (_svcSort.col === col) _svcSort.dir = _svcSort.dir === 'asc' ? 'desc' : 'asc';
+                    else { _svcSort.col = col; _svcSort.dir = 'asc'; }
+                    redraw();
+                });
+            });
+        }
+
+        // ── Counts für Filter-Bar ─────────────────────────────────────────────
+        const webCount   = services.filter(s => WEB_TYPES.includes(s.service_type)).length;
+        const dbCount    = services.filter(s => DB_TYPES.includes(s.service_type)).length;
+        const otherCount = services.filter(s => !WEB_TYPES.includes(s.service_type) && !DB_TYPES.includes(s.service_type)).length;
+        const types      = [...new Set(services.map(s => s.service_type))].sort();
+
+        let filterHtml = `<button class="service-filter-btn ${_svcTypeFilter==='all'?'active':''}" data-ftype="all">Alle (${services.length})</button>`;
+        if (webCount)   filterHtml += `<button class="service-filter-btn ${_svcTypeFilter==='_web'?'active':''}" data-ftype="_web">&#127760;&nbsp;Web (${webCount})</button>`;
+        if (vhosts.length) filterHtml += `<button class="service-filter-btn ${_svcTypeFilter==='_vhost'?'active':''}" data-ftype="_vhost">&#128196;&nbsp;Apache VHosts (${vhosts.length})</button>`;
+        if (dbCount)    filterHtml += `<button class="service-filter-btn ${_svcTypeFilter==='_db'?'active':''}" data-ftype="_db">&#128190;&nbsp;Datenbanken (${dbCount})</button>`;
+        if (otherCount) filterHtml += `<button class="service-filter-btn ${_svcTypeFilter==='_other'?'active':''}" data-ftype="_other">Sonstiges (${otherCount})</button>`;
         types.forEach(t => {
-            filterHtml += `<button class="service-filter-btn" data-type="${esc(t)}">${esc(t)}</button>`;
+            filterHtml += `<button class="service-filter-btn ${_svcTypeFilter===t?'active':''}" data-ftype="${esc(t)}">${esc(t)}</button>`;
         });
 
         contentArea.innerHTML = `
         <div class="section-header">
             <div>
-                <h2 class="section-title">Services & Webserver</h2>
-                <p class="section-subtitle">${services.length} Services gescannt &mdash; Web-Interfaces, Datenbanken, IoT-Dienste</p>
+                <h2 class="section-title">Services &amp; Webserver</h2>
+                <p class="section-subtitle">${services.length} Services &middot; ${vhosts.length} Apache-Routen &middot; Web-Interfaces, Datenbanken, IoT-Dienste</p>
             </div>
         </div>
-        <div class="service-filter-bar" id="serviceFilterBar">${filterHtml}</div>
-        <div id="servicesTableWrap"></div>`;
+        <div class="service-filter-bar" id="svcFilterBar">${filterHtml}</div>
+        <div style="margin-bottom:14px">
+            <input type="text" class="net-search-input" id="svcSearchInput" placeholder="IP, Hostname, Typ, Titel, Banner suchen..." value="${esc(_svcSearch)}" style="max-width:420px">
+        </div>
+        <div id="svcWrap"></div>`;
 
-        renderFiltered();
+        redraw();
 
-        document.getElementById('serviceFilterBar').addEventListener('click', e => {
+        // Filter-Bar
+        document.getElementById('svcFilterBar').addEventListener('click', e => {
             const btn = e.target.closest('.service-filter-btn');
             if (!btn) return;
-            document.querySelectorAll('.service-filter-btn').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active');
-            activeFilter = btn.dataset.type;
+            _svcTypeFilter = btn.dataset.ftype;
+            renderServices();
+        });
 
-            // Gruppen-Filter
-            if (activeFilter === '_web') {
-                const list = services.filter(s => s.service_type === 'http' || s.service_type === 'https');
-                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
-            } else if (activeFilter === '_db') {
-                const list = services.filter(s => ['mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type));
-                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
-            } else if (activeFilter === '_other') {
-                const list = services.filter(s => !['http','https','mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type));
-                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
-            } else {
-                renderFiltered();
-            }
+        // Suche
+        let svcSearchTimer;
+        document.getElementById('svcSearchInput').addEventListener('input', e => {
+            clearTimeout(svcSearchTimer);
+            svcSearchTimer = setTimeout(() => {
+                _svcSearch = e.target.value.trim();
+                redraw();
+            }, 200);
         });
     }
 

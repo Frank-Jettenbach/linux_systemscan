@@ -902,3 +902,27 @@ td.name-col { color: var(--text-primary); font-weight: 500; }
     color: var(--accent);
     background: var(--accent-dim);
 }
+
+.svc-section-heading {
+    font-size: 15px;
+    font-weight: 600;
+    margin: 8px 0 12px;
+    color: var(--text-primary);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+.svc-host-heading {
+    font-size: 13px;
+    font-weight: 600;
+    margin: 16px 0 8px;
+    color: var(--accent);
+}
+.svc-title-link {
+    color: var(--text-primary);
+    text-decoration: none;
+    font-size: 13px;
+}
+.svc-title-link:hover {
+    color: var(--accent);
+    text-decoration: underline;
+}
