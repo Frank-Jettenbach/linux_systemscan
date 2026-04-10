@@ -3,6 +3,8 @@
 collect_local.py – Sammelt lokale Daten von linkmanager:
   - nmap Netzwerk-Scan (alle Hosts im LAN)
   - nmap Web-Port-Scan (leitet web_url ab, speichert in DB)
+  - Web-Details: HTTP GET, Titel, Status, Server, SSL-Zertifikat
+  - Service-Ports: Datenbanken (MySQL, Redis, ...), MQTT, SMB, VNC
   - Systemd Services (systemctl)
   - Offene Ports (ss -tlnp)
   - SSH Keys + Deployment-Status
@@ -12,10 +14,18 @@ collect_local.py – Sammelt lokale Daten von linkmanager:
 import json
 import os
 import re
+import socket
+import ssl as ssl_module
 import subprocess
+import time
 import traceback
 import xml.etree.ElementTree as ET
 from pathlib import Path
+from urllib.parse import urlparse
+
+import requests as _req
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ── Statische Metadaten (Kategorie + Beschreibung) ─────────────────────────
 HOST_META = {
@@ -103,9 +113,68 @@ WEB_PORTS = [
 ]
 
 
+# Service-Ports für Datenbanken, IoT und sonstige Dienste
+SERVICE_PORTS = {
+    21:    'ftp',
+    3306:  'mysql',
+    5432:  'postgres',
+    6379:  'redis',
+    27017: 'mongodb',
+    1883:  'mqtt',
+    9200:  'elasticsearch',
+    5984:  'couchdb',
+    8086:  'influxdb',
+    445:   'smb',
+    5900:  'vnc',
+}
+
+
 def _run(cmd, timeout=60):
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     return r.stdout.strip()
+
+
+def _check_ssl_cert(ip, port, hostname=''):
+    """Prüft SSL-Zertifikat und gibt {valid, expires, issuer} zurück."""
+    result = {'valid': None, 'expires': '', 'issuer': ''}
+    try:
+        ctx = ssl_module.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl_module.CERT_NONE
+        with socket.create_connection((ip, port), timeout=5) as raw_sock:
+            with ctx.wrap_socket(raw_sock, server_hostname=hostname or ip) as ssock:
+                cert = ssock.getpeercert()
+                if cert:
+                    result['valid'] = True
+                    result['expires'] = cert.get('notAfter', '')
+                    issuer_parts = dict(x[0] for x in cert.get('issuer', []))
+                    result['issuer'] = (
+                        issuer_parts.get('organizationName') or
+                        issuer_parts.get('commonName', '')
+                    )[:200]
+                else:
+                    result['valid'] = False
+    except ssl_module.SSLError:
+        result['valid'] = False
+    except Exception:
+        pass
+    return result
+
+
+def _grab_banner(ip, port, service_type, timeout=3):
+    """Verbindet auf Port und liest ersten Banner (für DB/Service-Erkennung)."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect((ip, port))
+            if service_type == 'redis':
+                s.sendall(b'*1\r\n$4\r\nPING\r\n')
+            elif service_type == 'elasticsearch':
+                s.sendall(b'GET / HTTP/1.0\r\nHost: localhost\r\n\r\n')
+            data = s.recv(512)
+            return data.decode('utf-8', errors='replace').strip()[:300]
+    except Exception:
+        return ''
 
 
 # ── nmap Web-Port-Scan ───────────────────────────────────────────────────────
@@ -150,6 +219,147 @@ def scan_web_ports(ip_list, errors):
                        'error_message': str(e), 'error_detail': traceback.format_exc()})
     print(f"    → {len(web_map)} Hosts mit Web-Interface")
     return web_map
+
+
+# ── Web-Details (HTTP GET + SSL) ────────────────────────────────────────────
+def scan_web_details(hosts, scan_id, errors):
+    """HTTP/HTTPS GET auf jeden Host mit bekannter web_url – sammelt Titel, Status, SSL."""
+    web_hosts = [
+        (h['ip_address'], h.get('hostname', ''), h['web_url'])
+        for h in hosts if h.get('web_url')
+    ]
+    if not web_hosts:
+        return []
+
+    print(f"  [webdetail] Scanning {len(web_hosts)} Web-Interfaces ...")
+    services = []
+
+    for ip, hostname, url in web_hosts:
+        parsed = urlparse(url)
+        port = parsed.port or (443 if parsed.scheme == 'https' else 80)
+
+        svc = {
+            'scan_id': scan_id,
+            'ip_address': ip,
+            'hostname': hostname or '',
+            'port': port,
+            'service_type': parsed.scheme,  # 'http' oder 'https'
+            'protocol': 'tcp',
+            'status': 'open',
+            'http_status': None,
+            'http_title': '',
+            'http_server': '',
+            'http_powered_by': '',
+            'ssl_valid': None,
+            'ssl_expires': '',
+            'ssl_issuer': '',
+            'banner': '',
+            'response_time_ms': None,
+        }
+
+        try:
+            t0 = time.time()
+            resp = _req.get(url, timeout=5, verify=False, allow_redirects=True,
+                            headers={'User-Agent': 'SystemScan/1.0'})
+            svc['response_time_ms'] = int((time.time() - t0) * 1000)
+            svc['http_status'] = resp.status_code
+            svc['http_server'] = (resp.headers.get('Server', '') or '')[:200]
+            svc['http_powered_by'] = (resp.headers.get('X-Powered-By', '') or '')[:100]
+
+            # HTML-Titel extrahieren
+            m = re.search(r'<title[^>]*>(.*?)</title>',
+                          resp.text[:8192], re.IGNORECASE | re.DOTALL)
+            if m:
+                svc['http_title'] = re.sub(r'\s+', ' ', m.group(1)).strip()[:400]
+
+        except Exception as e:
+            svc['status'] = 'error'
+            svc['banner'] = str(e)[:300]
+
+        # SSL-Zertifikat prüfen
+        if parsed.scheme == 'https':
+            ssl_info = _check_ssl_cert(ip, port, hostname)
+            svc['ssl_valid'] = (1 if ssl_info['valid'] is True
+                                else 0 if ssl_info['valid'] is False
+                                else None)
+            svc['ssl_expires'] = ssl_info['expires']
+            svc['ssl_issuer'] = ssl_info['issuer']
+
+        services.append(svc)
+        ok_txt = f"HTTP {svc['http_status']}" if svc['http_status'] else svc['status']
+        print(f"    {ip}:{port} ({parsed.scheme}) → {ok_txt}"
+              + (f"  '{svc['http_title'][:40]}'" if svc['http_title'] else ''))
+
+    reachable = sum(1 for s in services if s['status'] == 'open')
+    print(f"    → {reachable}/{len(services)} Web-Services erreichbar")
+    return services
+
+
+# ── Netzwerk-Service-Ports (Datenbanken, IoT, ...) ──────────────────────────
+def scan_network_services(hosts, scan_id, errors):
+    """nmap auf Service-Ports + Banner-Grab für Datenbanken und andere Dienste."""
+    if not hosts:
+        return []
+
+    ip_list = [h['ip_address'] for h in hosts]
+    host_map = {h['ip_address']: h.get('hostname', '') for h in hosts}
+    port_str = ','.join(str(p) for p in SERVICE_PORTS)
+
+    print(f"  [netservices] Scanning {len(ip_list)} Hosts auf Service-Ports ({port_str}) ...")
+    services = []
+
+    try:
+        result = subprocess.run(
+            ['nmap', '-p', port_str, '--open', '-oX', '-'] + ip_list,
+            capture_output=True, text=True, timeout=300
+        )
+        root = ET.fromstring(result.stdout)
+        for h in root.findall('host'):
+            ip = ''
+            for addr in h.findall('address'):
+                if addr.get('addrtype') == 'ipv4':
+                    ip = addr.get('addr', '')
+                    break
+            if not ip:
+                continue
+            ports_el = h.find('ports')
+            if not ports_el:
+                continue
+            for p_el in ports_el.findall('port'):
+                state = p_el.find('state')
+                if state is None or state.get('state') != 'open':
+                    continue
+                port = int(p_el.get('portid', 0))
+                service_type = SERVICE_PORTS.get(port, f'port-{port}')
+                banner = _grab_banner(ip, port, service_type)
+                services.append({
+                    'scan_id': scan_id,
+                    'ip_address': ip,
+                    'hostname': host_map.get(ip, ''),
+                    'port': port,
+                    'service_type': service_type,
+                    'protocol': 'tcp',
+                    'status': 'open',
+                    'http_status': None,
+                    'http_title': '',
+                    'http_server': '',
+                    'http_powered_by': '',
+                    'ssl_valid': None,
+                    'ssl_expires': '',
+                    'ssl_issuer': '',
+                    'banner': banner,
+                    'response_time_ms': None,
+                })
+                print(f"    {ip}:{port} ({service_type})"
+                      + (f" → {banner[:60]!r}" if banner else ''))
+    except Exception as e:
+        errors.append({
+            'scan_id': scan_id, 'host_ip': 'netservices', 'component': 'network_services',
+            'error_message': str(e), 'error_detail': traceback.format_exc()
+        })
+
+    print(f"    → {len(services)} Service-Ports offen")
+    return services
 
 
 # ── nmap Ping-Scan ───────────────────────────────────────────────────────────
@@ -434,7 +644,7 @@ def scan_topology(scan_id, nmap_count, errors):
 
 
 # ── DB speichern ─────────────────────────────────────────────────────────────
-def save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, topology):
+def save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, topology, service_scan=None):
     cursor = db.cursor()
 
     if nmap_hosts:
@@ -477,6 +687,18 @@ def save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, 
                     %(dns_domain)s,%(subnet)s,%(nmap_hosts_found)s)
         """, topology)
 
+    if service_scan:
+        cursor.executemany("""
+            INSERT INTO service_scan
+            (scan_id, ip_address, hostname, port, service_type, protocol, status,
+             http_status, http_title, http_server, http_powered_by,
+             ssl_valid, ssl_expires, ssl_issuer, banner, response_time_ms)
+            VALUES (%(scan_id)s,%(ip_address)s,%(hostname)s,%(port)s,%(service_type)s,
+                    %(protocol)s,%(status)s,%(http_status)s,%(http_title)s,%(http_server)s,
+                    %(http_powered_by)s,%(ssl_valid)s,%(ssl_expires)s,%(ssl_issuer)s,
+                    %(banner)s,%(response_time_ms)s)
+        """, service_scan)
+
     cursor.close()
 
 
@@ -484,13 +706,16 @@ def run_all(db, scan_id, config):
     errors = []
     subnet = config.get('nmap_subnet', '192.168.178.0/24')
 
-    nmap_hosts = scan_nmap(subnet, scan_id, errors)
-    services   = scan_services(scan_id, errors)
-    ports      = scan_ports(scan_id, errors)
-    ssh_keys   = scan_ssh_keys(scan_id, errors)
-    vhosts     = scan_apache_vhosts(scan_id, errors)
-    topology   = scan_topology(scan_id, len(nmap_hosts), errors)
+    nmap_hosts   = scan_nmap(subnet, scan_id, errors)
+    services     = scan_services(scan_id, errors)
+    ports        = scan_ports(scan_id, errors)
+    ssh_keys     = scan_ssh_keys(scan_id, errors)
+    vhosts       = scan_apache_vhosts(scan_id, errors)
+    topology     = scan_topology(scan_id, len(nmap_hosts), errors)
+    web_details  = scan_web_details(nmap_hosts, scan_id, errors)
+    net_services = scan_network_services(nmap_hosts, scan_id, errors)
+    service_scan = web_details + net_services
 
-    save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, topology)
+    save_local_data(db, scan_id, nmap_hosts, services, ports, ssh_keys, vhosts, topology, service_scan)
 
     return errors

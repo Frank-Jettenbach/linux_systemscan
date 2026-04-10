@@ -6,6 +6,8 @@
     let activeSection = 'overview';
     let filterHost = null;
     let searchQuery = '';
+    let logPollInterval = null;
+    let logAutoScroll = true;
 
     /* ── DOM refs ── */
     const $ = s => document.querySelector(s);
@@ -243,6 +245,18 @@
             });
         });
 
+        // Services
+        (data.service_scan || []).forEach(s => {
+            items.push({
+                type: 'service', section: 'services', icon: '&#128268;',
+                title: `${s.ip_address}:${s.port} (${s.service_type})`,
+                searchText: [s.ip_address, s.hostname, s.service_type, s.http_title, s.http_server, s.banner, s.port].join(' '),
+                meta: `${s.hostname || s.ip_address} | Port ${s.port} | ${s.service_type}${s.http_title ? ' · ' + s.http_title : ''}`,
+                status: s.status,
+                data: s
+            });
+        });
+
         // Errors
         (data.errors || []).forEach(e => {
             items.push({
@@ -435,6 +449,7 @@
             case 'docker': renderDocker(); break;
             case 'storage': renderStorage(); break;
             case 'network': renderNetwork(); break;
+            case 'services': renderServices(); break;
             case 'errors': renderErrors(); break;
         }
     }
@@ -488,6 +503,11 @@
                 <div class="stat-label">LAN-Hosts</div>
                 <div class="stat-value accent">${(data.network_hosts || []).length}</div>
                 <div class="stat-sub">${(data.network || []).filter(x=>x.active==1).length} PVE-Interfaces aktiv</div>
+            </div>
+            <div class="stat-card clickable" data-goto="services">
+                <div class="stat-label">Services</div>
+                <div class="stat-value accent">${(data.service_scan || []).length}</div>
+                <div class="stat-sub">${(data.service_scan || []).filter(x=>x.service_type==='http'||x.service_type==='https').length} Web &middot; ${(data.service_scan || []).filter(x=>['mysql','postgres','redis','mongodb'].includes(x.service_type)).length} DB</div>
             </div>
             <div class="stat-card">
                 <div class="stat-label">Scan-Dauer</div>
@@ -1161,23 +1181,197 @@
         loading.style.display = 'none';
     };
 
+    /* ── Log Window ── */
+    function setLogStatus(text, cls) {
+        const el = $('#logStatus');
+        el.textContent = text;
+        el.className = 'log-status log-status-' + cls;
+    }
+
+    async function pollLog() {
+        try {
+            const result = await api('scan_log');
+            if (result.success) {
+                const body = $('#logBody');
+                const atBottom = body.scrollHeight - body.scrollTop <= body.clientHeight + 60;
+                body.textContent = result.data;
+                if (logAutoScroll || atBottom) body.scrollTop = body.scrollHeight;
+            }
+        } catch (_) {}
+    }
+
+    function stopLogPolling(statusText, statusCls) {
+        if (logPollInterval) { clearInterval(logPollInterval); logPollInterval = null; }
+        setLogStatus(statusText, statusCls);
+        $('#btnCancelScan').style.display = 'none';
+        $('#btnRescan').disabled = false;
+        $('#btnRescan').innerHTML = '&#8635; Scan starten';
+    }
+
+    async function startLogPolling() {
+        setLogStatus('Scan laeuft...', 'run');
+        $('#btnCancelScan').style.display = '';
+        await pollLog();
+        if (logPollInterval) clearInterval(logPollInterval);
+        logPollInterval = setInterval(async () => {
+            await pollLog();
+            try {
+                const st = await api('scan_status');
+                if (!st.running) {
+                    await pollLog();
+                    stopLogPolling('Abgeschlossen', 'done');
+                    setTimeout(() => loadDashboard(), 1500);
+                }
+            } catch (_) {}
+        }, 1500);
+    }
+
+    async function cancelScan() {
+        $('#btnCancelScan').disabled = true;
+        try {
+            await api('cancel_scan');
+            await pollLog();
+            stopLogPolling('Abgebrochen', 'error');
+            showToast('Scan abgebrochen');
+        } catch (e) {
+            showToast('Fehler beim Abbrechen: ' + e.message, true);
+        } finally {
+            $('#btnCancelScan').disabled = false;
+        }
+    }
+
+    function openLogModal() {
+        $('#logModal').style.display = 'flex';
+        pollLog();
+    }
+
+    function closeLogModal() {
+        $('#logModal').style.display = 'none';
+    }
+
     /* ── Trigger Scan ── */
     async function triggerScan() {
         try {
             const result = await api('trigger_scan');
             if (result.success) {
-                showToast('Scan gestartet! Seite wird in 25s aktualisiert...');
+                showToast('Scan gestartet...');
                 $('#btnRescan').disabled = true;
                 $('#btnRescan').textContent = '\u23F3 Scan laeuft...';
-                setTimeout(() => {
-                    loadDashboard();
-                    $('#btnRescan').disabled = false;
-                    $('#btnRescan').innerHTML = '&#8635; Scan starten';
-                }, 25000);
+                openLogModal();
+                startLogPolling();
             }
         } catch (e) {
             showToast('Fehler: ' + e.message, true);
         }
+    }
+
+    /* ── Services Render ── */
+    function renderServices() {
+        const services = data.service_scan || [];
+
+        // Alle vorhandenen Service-Typen ermitteln
+        const types = [...new Set(services.map(s => s.service_type))].sort();
+        let activeFilter = 'all';
+
+        function getTypeClass(t) {
+            const known = ['http','https','mysql','postgres','mongodb','couchdb','influxdb','redis','elasticsearch','mqtt','ftp','smb','vnc'];
+            return known.includes(t) ? 'stype-' + t : 'stype-default';
+        }
+
+        function httpStatusClass(code) {
+            if (!code) return '';
+            if (code >= 200 && code < 300) return 'http-status-ok';
+            if (code >= 300 && code < 400) return 'http-status-rdr';
+            return 'http-status-err';
+        }
+
+        function sslIcon(valid) {
+            if (valid === null || valid === undefined || valid === '') return '<span class="ssl-unknown" title="N/A">&#8211;</span>';
+            if (Number(valid) === 1) return '<span class="ssl-ok" title="Zertifikat gueltig">&#10003;</span>';
+            return '<span class="ssl-bad" title="Zertifikat ungueltig / abgelaufen">&#10007;</span>';
+        }
+
+        function buildTable(list) {
+            if (!list.length) return '<div class="no-data">Keine Services gefunden.</div>';
+            return `<table class="data-table">
+                <thead><tr>
+                    <th>IP</th>
+                    <th>Hostname</th>
+                    <th>Port</th>
+                    <th>Typ</th>
+                    <th>HTTP</th>
+                    <th>Titel / Banner</th>
+                    <th>Server</th>
+                    <th>SSL</th>
+                    <th>Antwort</th>
+                </tr></thead>
+                <tbody>
+                ${list.map(s => `<tr>
+                    <td>${s.web_url ? `<a href="${esc(s.web_url || 'http://' + s.ip_address + ':' + s.port)}" target="_blank" class="ip-link">${esc(s.ip_address)}</a>` : esc(s.ip_address)}</td>
+                    <td>${esc(s.hostname) || '<span class="text-muted">-</span>'}</td>
+                    <td><code>${esc(s.port)}</code></td>
+                    <td><span class="service-type-badge ${getTypeClass(s.service_type)}">${esc(s.service_type)}</span></td>
+                    <td class="${httpStatusClass(s.http_status)}">${s.http_status || '<span class="text-muted">-</span>'}</td>
+                    <td class="text-truncate" style="max-width:260px" title="${esc(s.http_title || s.banner)}">${esc((s.http_title || s.banner || '').substring(0, 80)) || '<span class="text-muted">-</span>'}</td>
+                    <td class="text-muted" style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(s.http_server) || '-'}</td>
+                    <td>${sslIcon(s.ssl_valid)}${s.ssl_expires ? `<span class="text-muted" style="font-size:11px;margin-left:4px">${esc(s.ssl_expires.substring(0,11))}</span>` : ''}</td>
+                    <td class="text-muted">${s.response_time_ms != null ? s.response_time_ms + ' ms' : '-'}</td>
+                </tr>`).join('')}
+                </tbody>
+            </table>`;
+        }
+
+        function renderFiltered() {
+            const list = activeFilter === 'all' ? services
+                : services.filter(s => s.service_type === activeFilter);
+            document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
+        }
+
+        const webCount = services.filter(s => s.service_type === 'http' || s.service_type === 'https').length;
+        const dbCount  = services.filter(s => ['mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type)).length;
+        const otherCount = services.length - webCount - dbCount;
+
+        let filterHtml = `<button class="service-filter-btn active" data-type="all">Alle (${services.length})</button>`;
+        if (webCount)  filterHtml += `<button class="service-filter-btn" data-type="_web">Web (${webCount})</button>`;
+        if (dbCount)   filterHtml += `<button class="service-filter-btn" data-type="_db">Datenbanken (${dbCount})</button>`;
+        if (otherCount) filterHtml += `<button class="service-filter-btn" data-type="_other">Sonstiges (${otherCount})</button>`;
+        types.forEach(t => {
+            filterHtml += `<button class="service-filter-btn" data-type="${esc(t)}">${esc(t)}</button>`;
+        });
+
+        contentArea.innerHTML = `
+        <div class="section-header">
+            <div>
+                <h2 class="section-title">Services & Webserver</h2>
+                <p class="section-subtitle">${services.length} Services gescannt &mdash; Web-Interfaces, Datenbanken, IoT-Dienste</p>
+            </div>
+        </div>
+        <div class="service-filter-bar" id="serviceFilterBar">${filterHtml}</div>
+        <div id="servicesTableWrap"></div>`;
+
+        renderFiltered();
+
+        document.getElementById('serviceFilterBar').addEventListener('click', e => {
+            const btn = e.target.closest('.service-filter-btn');
+            if (!btn) return;
+            document.querySelectorAll('.service-filter-btn').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            activeFilter = btn.dataset.type;
+
+            // Gruppen-Filter
+            if (activeFilter === '_web') {
+                const list = services.filter(s => s.service_type === 'http' || s.service_type === 'https');
+                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
+            } else if (activeFilter === '_db') {
+                const list = services.filter(s => ['mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type));
+                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
+            } else if (activeFilter === '_other') {
+                const list = services.filter(s => !['http','https','mysql','postgres','redis','mongodb','couchdb','influxdb','elasticsearch'].includes(s.service_type));
+                document.getElementById('servicesTableWrap').innerHTML = buildTable(list);
+            } else {
+                renderFiltered();
+            }
+        });
     }
 
     /* ── Event Listeners ── */
@@ -1232,18 +1426,28 @@
 
     // Buttons
     $('#btnRescan').addEventListener('click', triggerScan);
+    $('#btnLog').addEventListener('click', openLogModal);
     $('#btnHistory').addEventListener('click', showHistory);
     $('#closeHistory').addEventListener('click', () => { $('#historyModal').style.display = 'none'; });
+    $('#btnCloseLog').addEventListener('click', closeLogModal);
+    $('#btnCancelScan').addEventListener('click', cancelScan);
 
-    // Close modal on overlay click
+    // Log auto-scroll checkbox
+    $('#logAutoScrollCheck').addEventListener('change', e => { logAutoScroll = e.target.checked; });
+
+    // Close modals on overlay click
     $('#historyModal').addEventListener('click', (e) => {
         if (e.target === e.currentTarget) e.currentTarget.style.display = 'none';
+    });
+    $('#logModal').addEventListener('click', (e) => {
+        if (e.target === e.currentTarget) closeLogModal();
     });
 
     // Keyboard shortcuts
     document.addEventListener('keydown', (e) => {
         if (e.key === 'Escape') {
             $('#historyModal').style.display = 'none';
+            closeLogModal();
             if (searchQuery) {
                 searchInput.value = '';
                 searchClear.style.display = 'none';

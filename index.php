@@ -26,6 +26,7 @@
     <div class="nav-right">
         <span class="scan-info" id="scanInfo"></span>
         <button class="btn btn-accent" id="btnRescan" title="Neuen Scan starten">&#8635; Scan starten</button>
+        <button class="btn btn-secondary" id="btnLog" title="Scan-Log anzeigen">&#128196; Log</button>
         <button class="btn btn-secondary" id="btnHistory" title="Scan-Verlauf">&#128197; Verlauf</button>
     </div>
 </nav>
@@ -54,6 +55,9 @@
             </li>
             <li class="nav-item" data-section="network">
                 <span class="nav-icon">&#127760;</span> Netzwerk
+            </li>
+            <li class="nav-item" data-section="services">
+                <span class="nav-icon">&#128268;</span> Services
             </li>
             <li class="nav-item" data-section="errors">
                 <span class="nav-icon">&#9888;</span> Fehler
@@ -84,6 +88,26 @@
         </div>
         <div class="modal-body" id="historyBody">
         </div>
+    </div>
+</div>
+
+<!-- Scan Log Modal -->
+<div class="modal-overlay" id="logModal" style="display:none">
+    <div class="log-window">
+        <div class="log-header">
+            <div class="log-title-area">
+                <span>&#128196; Scan-Log</span>
+                <span class="log-status log-status-idle" id="logStatus">Bereit</span>
+            </div>
+            <div class="log-controls">
+                <label class="log-scroll-label">
+                    <input type="checkbox" id="logAutoScrollCheck" checked> Auto-Scroll
+                </label>
+                <button class="btn btn-danger btn-sm" id="btnCancelScan" style="display:none">&#9632; Abbrechen</button>
+                <button class="btn btn-secondary btn-sm" id="btnCloseLog">&times; Schlie&szlig;en</button>
+            </div>
+        </div>
+        <pre class="log-body" id="logBody">Noch kein Log vorhanden. Scan starten um Ausgabe zu sehen.</pre>
     </div>
 </div>
 

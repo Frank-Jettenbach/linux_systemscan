@@ -43,6 +43,9 @@ try {
             $networkTopology = $pdo->prepare("SELECT * FROM network_topology WHERE scan_id = ? LIMIT 1");
             $networkTopology->execute([$sid]);
 
+            $serviceScan = $pdo->prepare("SELECT * FROM service_scan WHERE scan_id = ? ORDER BY INET_ATON(ip_address), port");
+            $serviceScan->execute([$sid]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -56,6 +59,7 @@ try {
                     'errors' => $errors->fetchAll(),
                     'network_hosts' => $networkHosts->fetchAll(),
                     'network_topology' => $networkTopology->fetch() ?: null,
+                    'service_scan' => $serviceScan->fetchAll(),
                 ]
             ]);
             break;
@@ -102,6 +106,9 @@ try {
             $networkTopology = $pdo->prepare("SELECT * FROM network_topology WHERE scan_id = ? LIMIT 1");
             $networkTopology->execute([$id]);
 
+            $serviceScan2 = $pdo->prepare("SELECT * FROM service_scan WHERE scan_id = ? ORDER BY INET_ATON(ip_address), port");
+            $serviceScan2->execute([$id]);
+
             echo json_encode([
                 'success' => true,
                 'data' => [
@@ -115,6 +122,7 @@ try {
                     'errors' => $errors->fetchAll(),
                     'network_hosts' => $networkHosts->fetchAll(),
                     'network_topology' => $networkTopology->fetch() ?: null,
+                    'service_scan' => $serviceScan2->fetchAll(),
                 ]
             ]);
             break;
@@ -123,17 +131,49 @@ try {
         case 'trigger_scan':
             $scannerPath = __DIR__ . '/scanner/venv/bin/python';
             $scriptPath = __DIR__ . '/scanner/scan.py';
-            $logPath = __DIR__ . '/scanner/last_scan.log';
-            $cmd = "$scannerPath $scriptPath > $logPath 2>&1 &";
+            $logPath = '/tmp/systemscan_last.log';
+            $pidFile = '/tmp/systemscan.pid';
+            // -u = unbuffered, PID in Datei für Cancel
+            $cmd = "$scannerPath -u $scriptPath > $logPath 2>&1 & echo \$! > $pidFile";
             exec($cmd);
             echo json_encode(['success' => true, 'message' => 'Scan gestartet']);
             break;
 
+        /* ── Cancel running scan ── */
+        case 'cancel_scan':
+            $pidFile = '/tmp/systemscan.pid';
+            $killed = false;
+            if (file_exists($pidFile)) {
+                $pid = (int)trim(file_get_contents($pidFile));
+                if ($pid > 0) {
+                    exec("kill -- -$(ps -o pgid= -p $pid 2>/dev/null | tr -d ' ') 2>/dev/null");
+                    exec("kill $pid 2>/dev/null");
+                    exec("pkill -P $pid 2>/dev/null");
+                    @unlink($pidFile);
+                    $killed = true;
+                }
+            }
+            // Scan-Run als abgebrochen markieren
+            $pdo->exec("UPDATE scan_runs SET status='failed', finished_at=NOW() WHERE status='running'");
+            file_put_contents('/tmp/systemscan_last.log', "\n\n[SCAN ABGEBROCHEN]\n", FILE_APPEND);
+            echo json_encode(['success' => true, 'killed' => $killed]);
+            break;
+
         /* ── Get scan log ── */
         case 'scan_log':
-            $logPath = __DIR__ . '/scanner/last_scan.log';
+            $logPath = '/tmp/systemscan_last.log';
             $log = file_exists($logPath) ? file_get_contents($logPath) : 'Kein Log vorhanden';
             echo json_encode(['success' => true, 'data' => $log]);
+            break;
+
+        /* ── Scan status (running or not) ── */
+        case 'scan_status':
+            $scan = $pdo->query("SELECT id, status, started_at FROM scan_runs ORDER BY id DESC LIMIT 1")->fetch();
+            echo json_encode([
+                'success' => true,
+                'running' => $scan && $scan['status'] === 'running',
+                'scan_id' => $scan ? (int)$scan['id'] : null,
+            ]);
             break;
 
         /* ── Comparison of two scans ── */
