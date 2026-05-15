@@ -28,6 +28,7 @@
         <button class="btn btn-accent" id="btnRescan" title="Neuen Scan starten">&#8635; Scan starten</button>
         <button class="btn btn-secondary" id="btnLog" title="Scan-Log anzeigen">&#128196; Log</button>
         <button class="btn btn-secondary" id="btnHistory" title="Scan-Verlauf">&#128197; Verlauf</button>
+        <button class="btn btn-secondary" id="btnTheme" title="Theme wechseln">&#9728;</button>
     </div>
 </nav>
 

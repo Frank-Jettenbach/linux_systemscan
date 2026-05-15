@@ -1,6 +1,33 @@
-/* ── Linux SystemScan - Dark Theme ── */
+/* ── Linux SystemScan - Theme Variables ── */
 
 :root {
+    --bg-primary: #f0f2f5;
+    --bg-secondary: #ffffff;
+    --bg-card: #ffffff;
+    --bg-card-hover: #f8f9fa;
+    --bg-input: #f0f2f5;
+    --border: #dee2e6;
+    --border-light: #e9ecef;
+    --text-primary: #212529;
+    --text-secondary: #6c757d;
+    --text-muted: #adb5bd;
+    --accent: #007bff;
+    --accent-dim: rgba(0, 123, 255, 0.15);
+    --purple: #6f42c1;
+    --purple-dim: rgba(111, 66, 193, 0.15);
+    --success: #28a745;
+    --success-dim: rgba(40, 167, 69, 0.15);
+    --warning: #ffc107;
+    --warning-dim: rgba(255, 193, 7, 0.15);
+    --danger: #dc3545;
+    --danger-dim: rgba(220, 53, 69, 0.15);
+    --sidebar-width: 260px;
+    --nav-height: 56px;
+    --radius: 8px;
+    --radius-sm: 5px;
+}
+
+body.dark-theme {
     --bg-primary: #0f0f1a;
     --bg-secondary: #161625;
     --bg-card: #1c1c30;
@@ -21,10 +48,6 @@
     --warning-dim: rgba(245, 158, 11, 0.15);
     --danger: #ef4444;
     --danger-dim: rgba(239, 68, 68, 0.15);
-    --sidebar-width: 260px;
-    --nav-height: 56px;
-    --radius: 8px;
-    --radius-sm: 5px;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -141,6 +164,14 @@ body {
 .btn-sm { padding: 4px 10px; font-size: 12px; }
 .btn-success { background: var(--success-dim); border-color: var(--success); color: var(--success); }
 .btn-danger { background: var(--danger-dim); border-color: var(--danger); color: var(--danger); }
+
+#btnTheme {
+    margin-left: 20px;
+    color: var(--text-secondary);
+}
+body.dark-theme #btnTheme {
+    color: var(--text-primary);
+}
 
 /* ── Sidebar ── */
 .sidebar {

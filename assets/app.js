@@ -41,7 +41,8 @@
 
     function formatDate(dt) {
         if (!dt) return '-';
-        const d = new Date(dt);
+        // Append 'Z' to treat the date string from the DB as UTC
+        const d = new Date(dt + 'Z');
         return d.toLocaleDateString('de-DE') + ' ' + d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
     }
 
@@ -1623,6 +1624,38 @@
             searchInput.select();
         }
     });
+
+    /* ── Theme Switcher ── */
+    const themeBtn = $('#btnTheme');
+    const body = document.body;
+
+    function applyTheme(theme) {
+        if (theme === 'dark') {
+            body.classList.add('dark-theme');
+            themeBtn.innerHTML = '&#9789;'; // Moon icon
+        } else {
+            body.classList.remove('dark-theme');
+            themeBtn.innerHTML = '&#9728;'; // Sun icon
+        }
+    }
+
+    function toggleTheme() {
+        const currentTheme = body.classList.contains('dark-theme') ? 'dark' : 'light';
+        const newTheme = currentTheme === 'dark' ? 'light' : 'dark';
+        applyTheme(newTheme);
+        localStorage.setItem('theme', newTheme);
+    }
+
+    themeBtn.addEventListener('click', toggleTheme);
+
+    // Load saved theme
+    const savedTheme = localStorage.getItem('theme');
+    if (savedTheme) {
+        applyTheme(savedTheme);
+    } else {
+        // Default to dark theme if no preference is saved
+        applyTheme('dark');
+    }
 
     /* ── Init ── */
     loadDashboard();
