@@ -21,6 +21,7 @@ Infrastructure monitoring tool for Proxmox-based homelabs. Scans the local netwo
 - **Service Detection** — MQTT (1883), FTP (21), SMB (445), VNC (5900) with banner grabbing for version info
 
 ### Frontend
+- Light & Dark theme support with a persistent theme switcher
 - Dark-themed single-page UI (PHP + vanilla JS)
 - Dashboard with clickable stat cards
 - Sections: Dashboard · Proxmox Hosts · VMs · LXC · Docker · Storage · Network · **Services** · Errors
@@ -163,7 +164,7 @@ linux_systemscan/
 ├── scan.sh                # Convenience wrapper for cron
 ├── assets/
 │   ├── app.js             # Frontend logic (vanilla JS)
-│   ├── style.css          # Dark theme CSS
+│   ├── style.css          # Light/Dark theme CSS
 │   └── favicon.svg
 └── scanner/
     ├── scan.py            # Main scanner (Proxmox API, SSH Docker, HA)
@@ -203,3 +204,11 @@ nmap uses `--dns-servers 192.168.178.106` (AdGuard Home) for forward lookups; PT
 ## License
 
 Private homelab project — not intended for public deployment without review of hardcoded credentials and network assumptions.
+
+---
+
+## Changelog
+
+- **feat**: Implemented a light/dark theme switcher with localStorage persistence.
+- **fix**: Corrected a timezone display bug where UTC time from the database was not being converted to the user's local time in the UI.
+- **style**: Improved the positioning and visibility of the theme switcher button for better user experience.
